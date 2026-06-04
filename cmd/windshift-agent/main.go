@@ -5,22 +5,34 @@
 // context packer, and the four coding tools (bash/read/write/edit).
 //
 // The agent is the UNTRUSTED payload. It holds no SCM credentials and chooses
-// nothing about what to clone or where to push: the runner prepares /workspace
-// and brokers every outbound secret. The agent reaches the model only through
-// the Windshift llm-proxy (OpenAI-compatible /v1/chat/completions), configured
-// entirely from the environment:
+// nothing about what to clone or push: the runner prepares /workspace and
+// brokers every outbound secret. The agent reaches the model only through the
+// Windshift llm-proxy (OpenAI-compatible /v1/chat/completions), configured
+// entirely from the environment.
 //
-//	LLM_BASE_URL  llm-proxy base, e.g. http://llm-proxy/v1 (required)
-//	LLM_MODEL     model id the proxy routes (required)
-//	LLM_API_KEY   per-run broker token; never a raw provider key (optional)
+// It speaks the JSONL subprocess contract that services.PiRunner drives:
 //
-// TODO(WI-207): drive the JSONL subprocess contract over stdin/stdout
-//   - stdin:  {"type":"prompt","message":"..."}  {"type":"abort"}
-//   - stdout: starting / tool_start / tool_done / error / final / session_idle
+//	stdin  (one JSON object per line):
+//	    {"type":"prompt","message":"..."}   run the task
+//	    {"type":"abort"}                     cancel the in-flight run
+//	    (stdin EOF)                          shut down cleanly
+//	stdout (NDJSON events, one per line):
+//	    {"type":"starting"}
+//	    {"type":"content","text":"..."}
+//	    {"type":"tool_start","id":..,"tool":..,"args":{..}}
+//	    {"type":"tool_done","id":..,"tool":..,"output":".."}
+//	    {"type":"message","role":"assistant","text":".."}
+//	    {"type":"error","message":".."}
+//	    {"type":"session_idle"}              run finished (success or error)
+//
+// PiRunner blocks until it sees session_idle, then sends abort + closes stdin.
+//
 // TODO(WI-208): flip the llm client to stream:false for the non-streaming MVP.
 package main
 
 import (
+	"context"
+	_ "embed"
 	"fmt"
 	"os"
 
@@ -28,17 +40,24 @@ import (
 	"windshift-agent/internal/tools"
 )
 
+//go:embed system.md
+var systemPrompt string
+
 type config struct {
 	baseURL string
 	model   string
 	token   string
+	ctxSize int
 }
+
+const defaultContextSize = 128_000
 
 func configFromEnv() (config, error) {
 	c := config{
 		baseURL: os.Getenv("LLM_BASE_URL"),
 		model:   os.Getenv("LLM_MODEL"),
 		token:   os.Getenv("LLM_API_KEY"),
+		ctxSize: defaultContextSize,
 	}
 	if c.baseURL == "" {
 		return c, fmt.Errorf("LLM_BASE_URL is required")
@@ -46,26 +65,35 @@ func configFromEnv() (config, error) {
 	if c.model == "" {
 		return c, fmt.Errorf("LLM_MODEL is required")
 	}
+	if v := os.Getenv("LLM_CONTEXT_SIZE"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			c.ctxSize = n
+		}
+	}
 	return c, nil
 }
 
 // toolDefs is the OpenAI tool catalog the agent advertises to the model. Each
-// schema comes from the forked tools package; dispatch is tools.Execute.
+// *Schema() returns the complete tool object (name/description/parameters); we
+// lift them into llm.Tool so the advertised names always match tools.Execute's
+// dispatch (bash/read_file/write_file/edit_file).
 func toolDefs() []llm.Tool {
-	defs := []struct {
-		name, desc string
-		params     map[string]any
-	}{
-		{"bash", "Run a shell command in the workspace.", tools.BashSchema()},
-		{"read_file", "Read a file from the workspace.", tools.ReadFileSchema()},
-		{"write_file", "Write (create or overwrite) a file in the workspace.", tools.WriteFileSchema()},
-		{"edit_file", "Replace an exact substring in a file.", tools.EditFileSchema()},
+	schemas := []map[string]any{
+		tools.BashSchema(),
+		tools.ReadFileSchema(),
+		tools.WriteFileSchema(),
+		tools.EditFileSchema(),
 	}
-	out := make([]llm.Tool, 0, len(defs))
-	for _, d := range defs {
+	out := make([]llm.Tool, 0, len(schemas))
+	for _, s := range schemas {
+		fn, _ := s["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		desc, _ := fn["description"].(string)
+		params, _ := fn["parameters"].(map[string]any)
 		out = append(out, llm.Tool{
 			Type:     "function",
-			Function: llm.FunctionDef{Name: d.name, Description: d.desc, Parameters: d.params},
+			Function: llm.FunctionDef{Name: name, Description: desc, Parameters: params},
 		})
 	}
 	return out
@@ -78,13 +106,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	client := llm.New(cfg.baseURL, cfg.model, cfg.token)
-	catalog := toolDefs()
-
-	// TODO(WI-207): replace this banner with the JSONL stdin/stdout loop that
-	// drives client.Chat(...) and tools.Execute(...) per prompt.
-	fmt.Fprintf(os.Stderr,
-		"windshift-agent: ready (model=%s, base=%s, tools=%d); JSONL loop pending WI-207\n",
-		cfg.model, cfg.baseURL, len(catalog))
-	_ = client
+	a := newAgent(llm.New(cfg.baseURL, cfg.model, cfg.token), toolDefs(), cfg.ctxSize, os.Stdout)
+	os.Exit(a.serve(context.Background(), os.Stdin))
 }

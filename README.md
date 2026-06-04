@@ -24,9 +24,10 @@ The agent is the **untrusted** payload:
 
 | Var | Meaning |
 |-----|---------|
-| `LLM_BASE_URL` | llm-proxy base, e.g. `http://llm-proxy/v1` (required) |
+| `LLM_BASE_URL` | llm-proxy **host root**, e.g. `http://llm-proxy` (required). The client appends `/v1/chat/completions` — do not include `/v1`. |
 | `LLM_MODEL`    | model id the proxy routes (required) |
 | `LLM_API_KEY`  | per-run broker token; never a raw provider key (optional) |
+| `LLM_CONTEXT_SIZE` | context-window budget hint; default 128000, overridden live by the proxy's `X-Context-Window` header (optional) |
 
 ## Layout
 
