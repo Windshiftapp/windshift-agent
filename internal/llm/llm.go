@@ -198,6 +198,10 @@ type Client struct {
 	// A field, not a bare const, only so tests can shorten it; New sets the
 	// default and nothing else writes it.
 	IdleTimeout time.Duration
+	// Stream selects the wire mode. Default false: the non-streaming MVP
+	// (WI-208) — one JSON response, tool calls arrive whole, no SSE
+	// reassembly. Set true (LLM_STREAM=1) to use the SSE path (WI-211).
+	Stream bool
 	// noReasoningEffort goes true once the server 400s on reasoning for this
 	// model (newer OpenAI models reject tools + reasoning_effort here, pushing
 	// that combo onto /v1/responses; Ollama rejects it on non-thinking models).
@@ -223,6 +227,20 @@ func New(base, model, token string) *Client {
 		Token:       token,
 		HTTP:        &http.Client{},
 		IdleTimeout: idleTimeoutFromEnv(),
+		Stream:      streamEnabledFromEnv(),
+	}
+}
+
+// streamEnabledFromEnv reports whether SSE streaming is requested. Default is
+// false — the non-streaming MVP (WI-208). LLM_STREAM in {1,true,yes,on} opts
+// into the SSE path (WI-211); anything else (including unset) stays
+// non-streaming.
+func streamEnabledFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LLM_STREAM"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -281,29 +299,20 @@ func (c *Client) run(parent context.Context, msgs []chmctx.Message, tools []Tool
 	}
 	defer resp.Body.Close()
 
-	// Idle watchdog: bufio.Scanner.Scan() ignores context, so a server that
-	// stops sending after 200 OK would wedge readSSE forever. Closing the body
-	// from the timer unblocks the in-flight Read; readSSE then returns and we
-	// surface a stall. parent isn't cancelled, so (unlike Ctrl+C) the error
-	// reaches the user. readSSE resets the timer on every frame.
-	idle := c.IdleTimeout
-	if idle <= 0 {
-		idle = streamIdleTimeout
-	}
-	var stalled atomic.Bool
-	watchdog := time.AfterFunc(idle, func() {
-		stalled.Store(true)
-		resp.Body.Close()
-	})
-
 	budget := cloud.FromHeaders(resp.Header)
 	ctxWindow := cloud.ContextWindowFromHeaders(resp.Header)
-	final, tokens, err := readSSE(parent, resp.Body, budget, out, func() { watchdog.Reset(idle) })
-	watchdog.Stop()
+
+	var (
+		final  *chmctx.Message
+		tokens int
+		err    error
+	)
+	if c.Stream {
+		final, tokens, err = c.readStream(parent, resp, budget, out)
+	} else {
+		final, tokens, err = c.readJSON(parent, resp.Body, budget, out)
+	}
 	if err != nil {
-		if stalled.Load() {
-			err = fmt.Errorf("the server stopped sending data (no stream activity for %s)", idle)
-		}
 		sendEvent(parent, out, Event{Kind: EventError, Err: err})
 		return
 	}
@@ -333,14 +342,19 @@ func sendEvent(parent context.Context, out chan<- Event, e Event) bool {
 // returns the Event the caller forwards, populated with Kind/Err/Budget. The
 // body is closed on every non-200 branch; 200 leaves it open for the caller.
 func (c *Client) sendChat(parent context.Context, msgs []chmctx.Message, tools []Tool) (*http.Response, *Event) {
-	resp, budget, err := c.postChat(parent, chatRequest{
+	req := chatRequest{
 		Model:           c.Model,
 		Messages:        toWire(msgs),
 		Tools:           tools,
-		Stream:          true,
-		StreamOptions:   &streamOptions{IncludeUsage: true},
+		Stream:          c.Stream,
 		ReasoningEffort: "high",
-	})
+	}
+	if c.Stream {
+		// include_usage only affects the SSE tail chunk; the non-streaming
+		// response body carries usage unconditionally.
+		req.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
+	resp, budget, err := c.postChat(parent, req)
 	if err != nil {
 		return nil, &Event{Kind: EventError, Err: err, Budget: budget}
 	}
@@ -445,6 +459,90 @@ func errorMessageFromBody(b []byte) string {
 // message (content + accumulated tool calls), the server token count, and any
 // scanner error. parent is threaded through so sends abort on cancellation
 // instead of blocking on an undrained buffer.
+// readStream consumes the SSE body with an idle watchdog (the WI-211 path).
+// The watchdog exists because bufio.Scanner.Scan() ignores context: a server
+// that stops sending after 200 OK would wedge readSSE forever. Closing the body
+// from the timer unblocks the in-flight Read; readSSE then returns the stall,
+// which we relabel. readSSE resets the timer on every frame.
+func (c *Client) readStream(parent context.Context, resp *http.Response, budget cloud.BudgetStatus, out chan<- Event) (*chmctx.Message, int, error) {
+	idle := c.IdleTimeout
+	if idle <= 0 {
+		idle = streamIdleTimeout
+	}
+	var stalled atomic.Bool
+	watchdog := time.AfterFunc(idle, func() {
+		stalled.Store(true)
+		resp.Body.Close()
+	})
+	final, tokens, err := readSSE(parent, resp.Body, budget, out, func() { watchdog.Reset(idle) })
+	watchdog.Stop()
+	if err != nil && stalled.Load() {
+		err = fmt.Errorf("the server stopped sending data (no stream activity for %s)", idle)
+	}
+	return final, tokens, err
+}
+
+// chatResponse is the non-streaming /v1/chat/completions body: a single
+// assistant message plus optional usage. tool_calls arrive whole here (no
+// fragmentation), so each arguments field is a complete JSON string.
+type chatResponse struct {
+	Choices []struct {
+		Message struct {
+			Role      string     `json:"role"`
+			Content   string     `json:"content"`
+			ToolCalls []toolCall `json:"tool_calls"`
+		} `json:"message"`
+	} `json:"choices"`
+	Usage *struct {
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
+}
+
+// readJSON parses a non-streaming response (the WI-208 MVP) and emits the same
+// events the SSE path does — EventContent for any narration, EventToolCall per
+// resolved call — then returns the assembled assistant message so the loop in
+// agent.go is identical across wire modes.
+func (c *Client) readJSON(parent context.Context, body io.Reader, budget cloud.BudgetStatus, out chan<- Event) (*chmctx.Message, int, error) {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return nil, 0, err
+	}
+	var cr chatResponse
+	if err := json.Unmarshal(raw, &cr); err != nil {
+		return nil, 0, fmt.Errorf("decode chat response: %w", err)
+	}
+	if len(cr.Choices) == 0 {
+		return nil, 0, fmt.Errorf("chat response had no choices")
+	}
+	msg := cr.Choices[0].Message
+
+	calls := make([]chmctx.ToolCall, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		calls = append(calls, chmctx.ToolCall{
+			ID:        tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: parseToolArgs(tc.Function.Arguments),
+		})
+	}
+
+	if msg.Content != "" {
+		if !sendEvent(parent, out, Event{Kind: EventContent, Content: msg.Content, Budget: budget}) {
+			return nil, 0, parent.Err()
+		}
+	}
+	for i := range calls {
+		if !sendEvent(parent, out, Event{Kind: EventToolCall, ToolCall: &calls[i], Budget: budget}) {
+			return nil, 0, parent.Err()
+		}
+	}
+
+	tokens := 0
+	if cr.Usage != nil {
+		tokens = cr.Usage.CompletionTokens
+	}
+	return &chmctx.Message{Role: chmctx.RoleAssistant, Content: msg.Content, ToolCalls: calls}, tokens, nil
+}
+
 func readSSE(parent context.Context, body io.Reader, budget cloud.BudgetStatus, out chan<- Event, onFrame func()) (*chmctx.Message, int, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 1<<16), 4<<20)
@@ -563,16 +661,23 @@ type toolSlot struct {
 }
 
 func (t *toolSlot) resolve() chmctx.ToolCall {
+	return chmctx.ToolCall{ID: t.id, Name: t.name, Arguments: parseToolArgs(t.args.String())}
+}
+
+// parseToolArgs decodes a tool call's JSON arguments string into a map. Both
+// wire modes share it: streaming appends fragments before calling it, the
+// non-streaming response passes the whole string. Malformed args surface as a
+// _parse_error sentinel key (real args never use it) rather than a silently
+// empty map, so tools.Execute can name what broke instead of running on empty
+// input.
+func parseToolArgs(raw string) map[string]any {
 	parsed := map[string]any{}
-	if t.args.Len() > 0 {
-		if err := json.Unmarshal([]byte(t.args.String()), &parsed); err != nil {
-			// Malformed args surface as a sentinel key, not a silently empty
-			// map, so the log names what broke. Real args never use
-			// _parse_error, so collisions aren't a concern.
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 			parsed["_parse_error"] = err.Error()
 		}
 	}
-	return chmctx.ToolCall{ID: t.id, Name: t.name, Arguments: parsed}
+	return parsed
 }
 
 func toWire(msgs []chmctx.Message) []wireMessage {

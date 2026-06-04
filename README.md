@@ -28,6 +28,7 @@ The agent is the **untrusted** payload:
 | `LLM_MODEL`    | model id the proxy routes (required) |
 | `LLM_API_KEY`  | per-run broker token; never a raw provider key (optional) |
 | `LLM_CONTEXT_SIZE` | context-window budget hint; default 128000, overridden live by the proxy's `X-Context-Window` header (optional) |
+| `LLM_STREAM` | `1`/`true` to use the SSE streaming path; default off — the non-streaming (`stream:false`) MVP (optional) |
 
 ## Layout
 
