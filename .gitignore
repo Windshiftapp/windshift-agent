@@ -1,0 +1,5 @@
+# build output
+/windshift-agent
+/dist/
+*.test
+*.out
