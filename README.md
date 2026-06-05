@@ -59,6 +59,19 @@ nor `npm` exists in the image. The container runs as uid 1000 with `/workspace`
 as the working dir, matching `DockerPiRunner`'s `--user=1000:1000 --read-only`
 contract.
 
+## Releases / CI
+
+GitHub Actions (`.github/workflows/docker.yml`) builds the image on every push
+to `main` and on `v*` tags, publishing multi-arch (amd64+arm64) to
+`ghcr.io/windshiftapp/windshift-agent` (`:latest` on stable tags, plus semver
+and `sha-` tags). Pull requests build-only. The `ws` CLI is lifted from
+`WS_IMAGE` (default `ghcr.io/windshiftapp/coding-agent-runner:latest`; override
+with the `WS_IMAGE` repo/org variable).
+
+Core's `release.sh` also builds and pushes this image as part of a coordinated
+release (using the coding-agent-runner image it just built as `WS_IMAGE`), so a
+release publishes the agent at the same version as the server.
+
 ## Provenance
 
 Forked and stripped from [codehamr](https://github.com/codehamr/codehamr)
