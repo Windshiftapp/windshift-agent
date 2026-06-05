@@ -40,6 +40,25 @@ internal/tools/        bash, read_file, write_file, edit_file
 internal/cloud/        budget/auth header helpers (trim under WI-208)
 ```
 
+## Container image
+
+The runner image is the thin, **node-free** sandbox: `windshift-agent` + `git`
++ `ws` + CA certs + `envsubst`/entrypoint on `alpine`, nothing else. The agent
+is built from this repo; the `ws` CLI lives in core, so it is lifted from a
+prebuilt image via the `WS_IMAGE` build arg.
+
+```bash
+make cross                              # static linux amd64 + arm64 binaries
+make image WS_IMAGE=<image-with-ws>     # build windshift/agent:local
+make verify-no-node                     # assert tools present AND no node/npm
+```
+
+`make verify-no-node` is the WI-210 acceptance check: it confirms
+`windshift-agent`, `ws`, `git`, and `envsubst` resolve and that neither `node`
+nor `npm` exists in the image. The container runs as uid 1000 with `/workspace`
+as the working dir, matching `DockerPiRunner`'s `--user=1000:1000 --read-only`
+contract.
+
 ## Provenance
 
 Forked and stripped from [codehamr](https://github.com/codehamr/codehamr)

@@ -1,0 +1,32 @@
+#!/bin/sh
+# windshift-agent runner entrypoint.
+#
+# Prepares optional per-run config from env injected by RunService, then execs
+# the agent, which reads {type:prompt}/{type:abort} on stdin and emits NDJSON
+# events on stdout (PiRunner drives it). Deliberately tiny compared to the pi
+# entrypoint: the agent reads LLM_* directly and the runner — not the agent —
+# owns git push, so there is no provider-config or askpass plumbing here.
+set -eu
+
+# Windshift CLI config: render ws.toml only when the runner injected WS_* env.
+if [ -n "${WS_TOKEN:-}" ] && [ -n "${WS_API_URL:-}" ] && [ -n "${WS_WORKSPACE_KEY:-}" ]; then
+    mkdir -p "$HOME/.config/ws"
+    envsubst < /etc/windshift/ws.toml.template > "$HOME/.config/ws/config.toml"
+    chmod 0600 "$HOME/.config/ws/config.toml"
+fi
+
+# Local git identity so the agent's `git commit`s in /workspace succeed. There
+# is NO push auth by design: the runner pushes the run branch through the
+# git-proxy, and the agent never holds SCM credentials.
+git config --global user.name "${GIT_AUTHOR_NAME:-windshift-agent}" >/dev/null 2>&1 || true
+git config --global user.email "${GIT_AUTHOR_EMAIL:-agent@windshift.local}" >/dev/null 2>&1 || true
+export GIT_TERMINAL_PROMPT=0
+
+# Lifecycle marker before the agent takes over stdout with JSONL events.
+printf '{"type":"lifecycle","phase":"entrypoint","run_id":"%s"}\n' "${AGENT_RUN_ID:-unset}"
+
+if [ -d /workspace ]; then
+    cd /workspace
+fi
+
+exec windshift-agent

@@ -1,0 +1,5 @@
+.git
+/dist
+/windshift-agent
+*.test
+*.out

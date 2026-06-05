@@ -1,0 +1,10 @@
+# Rendered by windshift-agent-entrypoint.sh via envsubst at container start.
+# Source of truth for the env keys lives in core's
+# internal/services/run_service.go (RunService.execute / TokenSpec wiring).
+
+[server]
+url = "${WS_API_URL}"
+token = "${WS_TOKEN}"
+
+[defaults]
+workspace_key = "${WS_WORKSPACE_KEY}"
