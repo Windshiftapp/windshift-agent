@@ -14,9 +14,11 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE: windshiftapp/windshift-agent
-  # The thin agent image lifts the `ws` CLI from a core-built image. Override
-  # via repo/org variable WS_IMAGE if you publish ws under a different name/tag.
-  WS_IMAGE: ${{ vars.WS_IMAGE || 'ghcr.io/windshiftapp/coding-agent-runner:latest' }}
+  # The thin agent image lifts the `ws` CLI from a core-built image. core's
+  # docker.yml publishes coding-agent-runner:main on every main push (and
+  # :<version> on tags), but only :latest on stable releases — so default to
+  # :main, which always exists. Override via the WS_IMAGE repo/org variable.
+  WS_IMAGE: ${{ vars.WS_IMAGE || 'ghcr.io/windshiftapp/coding-agent-runner:main' }}
 
 jobs:
   build:
