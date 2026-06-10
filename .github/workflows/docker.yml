@@ -15,10 +15,12 @@ env:
   REGISTRY: ghcr.io
   IMAGE: windshiftapp/windshift-agent
   # The thin agent image lifts the `ws` CLI from a core-built image. core's
-  # docker.yml publishes coding-agent-runner:main on every main push (and
-  # :<version> on tags), but only :latest on stable releases — so default to
-  # :main, which always exists. Override via the WS_IMAGE repo/org variable.
-  WS_IMAGE: ${{ vars.WS_IMAGE || 'ghcr.io/windshiftapp/coding-agent-runner:main' }}
+  # docker.yml publishes ws-carrier:main on every main push (and :<version>
+  # on tags), but only :latest on stable releases — so default to :main,
+  # which always exists. (Renamed from coding-agent-runner in WI-314: the old
+  # name impersonated the agent image and caused the 2026-06-10 wrong-image
+  # misconfiguration.) Override via the WS_IMAGE repo/org variable.
+  WS_IMAGE: ${{ vars.WS_IMAGE || 'ghcr.io/windshiftapp/ws-carrier:main' }}
 
 jobs:
   build:
