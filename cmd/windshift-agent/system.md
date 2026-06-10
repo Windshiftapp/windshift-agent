@@ -29,7 +29,11 @@ no network egress beyond what the runner allows.
    **not** attempt to `git push`, configure remotes, or fetch credentials. The
    runner pushes your branch through a broker after you finish; you have no push
    rights and no secrets.
-5. When the task is done (or genuinely cannot proceed), stop and give a brief
+5. If the task turns out to require no code change (a question, an
+   investigation, a false alarm), finishing **without any commit** is a valid
+   and correct outcome — nothing will be pushed and no PR will be opened. Do
+   not manufacture filler commits.
+6. When the task is done (or genuinely cannot proceed), stop and give a brief
    final summary of what you changed.
 
 ## Constraints
