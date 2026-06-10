@@ -43,6 +43,13 @@ FROM ${WS_IMAGE} AS ws-src
 # --------------------------------------------------------------------
 FROM alpine:3.21
 
+# Agent-contract marker (WI-312): windshift-runner inspects the configured
+# image for this label before its first claim and refuses to spawn an image
+# without it. Guards against WSRUNNER_IMAGE pointing at a non-agent image
+# (e.g. the ws-carrier), whose container would exit 0 without speaking the
+# JSONL contract and report as a successful no-change run.
+LABEL org.windshift.agent-contract="v1"
+
 # ca-certificates (TLS to the brokers), git (agent commits in /workspace),
 # gettext (envsubst for ws.toml). No node, no npm.
 RUN apk add --no-cache ca-certificates git gettext
