@@ -3,7 +3,7 @@
 #
 # Prepares optional per-run config from env injected by RunService, then execs
 # the agent, which reads {type:prompt}/{type:abort} on stdin and emits NDJSON
-# events on stdout (PiRunner drives it). Deliberately tiny compared to the pi
+# events on stdout (JSONL runner drives it). Deliberately tiny compared to the retired Node runtime
 # entrypoint: the agent reads LLM_* directly and the runner — not the agent —
 # owns git push, so there is no provider-config or askpass plumbing here.
 set -eu
@@ -20,6 +20,16 @@ if [ -n "${WS_TOKEN:-}" ] && [ -n "${WS_API_URL:-}" ] && [ -n "${WS_WORKSPACE_KE
     mkdir -p "$HOME/.config/ws"
     envsubst < /etc/windshift/ws.toml.template > "$HOME/.config/ws/config.toml"
     chmod 0600 "$HOME/.config/ws/config.toml"
+
+    # The initial prompt points the agent at ~/WINDSHIFT.md for the exact CLI
+    # surface plus this workspace's statuses, item types, and transitions —
+    # without it the agent invents subcommands and status ids. `ws config
+    # docs` writes to cwd when no project ws.toml is found, hence the cd.
+    # Best-effort: a run without the doc still works via `ws --help`. Keep
+    # stdout clean — it becomes the JSONL event stream the runner parses.
+    if ! (cd "$HOME" && ws config docs >/dev/null 2>&1); then
+        echo "windshift-agent-entrypoint: ws config docs failed; ~/WINDSHIFT.md unavailable" >&2
+    fi
 fi
 
 # Local git identity so the agent's `git commit`s in /workspace succeed. There
