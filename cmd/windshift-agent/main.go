@@ -10,7 +10,7 @@
 // Windshift llm-proxy (OpenAI-compatible /v1/chat/completions), configured
 // entirely from the environment.
 //
-// It speaks the JSONL subprocess contract that services.PiRunner drives:
+// It speaks the JSONL subprocess contract that services.JSONL runner drives:
 //
 //	stdin  (one JSON object per line):
 //	    {"type":"prompt","message":"..."}   run the task
@@ -25,7 +25,7 @@
 //	    {"type":"error","message":".."}
 //	    {"type":"session_idle"}              run finished (success or error)
 //
-// PiRunner blocks until it sees session_idle, then sends abort + closes stdin.
+// JSONL runner blocks until it sees session_idle, then sends abort + closes stdin.
 //
 // TODO(WI-208): flip the llm client to stream:false for the non-streaming MVP.
 package main

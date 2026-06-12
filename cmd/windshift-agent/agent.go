@@ -18,7 +18,7 @@ import (
 // until the runner's idle watchdog kills it; this fails fast with a clear event.
 const maxTurns = 200
 
-// readBufMax caps a single JSONL line on stdin (matches PiRunner's 1 MiB).
+// readBufMax caps a single JSONL line on stdin (matches JSONL runner's 1 MiB).
 const readBufMax = 1 << 20
 
 // agent holds the run-independent wiring; serve() drives the JSONL protocol.
@@ -47,7 +47,7 @@ type command struct {
 }
 
 // emit writes one NDJSON event line to stdout and flushes it. Every line is
-// valid JSON so PiRunner forwards it verbatim rather than wrapping it.
+// valid JSON so JSONL runner forwards it verbatim rather than wrapping it.
 func (a *agent) emit(ev map[string]any) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -62,7 +62,7 @@ func (a *agent) emit(ev map[string]any) {
 
 // serve runs the JSONL control loop until stdin closes, returning the process
 // exit code. A prompt starts a run in its own goroutine; abort (or stdin EOF)
-// cancels the in-flight run. PiRunner sends one prompt, waits for session_idle,
+// cancels the in-flight run. JSONL runner sends one prompt, waits for session_idle,
 // then sends abort + closes stdin — but serve tolerates repeated prompts too.
 func (a *agent) serve(parent context.Context, stdin io.Reader) int {
 	cmds := make(chan command, 8)
@@ -95,7 +95,7 @@ func (a *agent) serve(parent context.Context, stdin io.Reader) int {
 				defer close(done)
 				a.runPrompt(runCtx, prompt)
 				// Always announce idle on natural completion (success OR error)
-				// so PiRunner stops waiting; skip it when we were cancelled,
+				// so JSONL runner stops waiting; skip it when we were cancelled,
 				// because the runner has already moved to shutdown.
 				if runCtx.Err() == nil {
 					a.emit(map[string]any{"type": "session_idle"})

@@ -1,7 +1,7 @@
 BINARY      := windshift-agent
 PKG         := ./cmd/windshift-agent
 IMAGE       ?= windshift/agent:local
-WS_IMAGE    ?= windshift/coding-agent:latest
+WS_IMAGE    ?= ghcr.io/windshiftapp/ws-carrier:latest
 LDFLAGS     := -s -w
 
 .PHONY: build test vet cross image verify-no-node clean

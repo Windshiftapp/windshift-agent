@@ -4,7 +4,7 @@
 #
 # The thin, NODE-FREE per-run sandbox. The agent (built here from source) speaks
 # the JSONL contract on stdin/stdout; the entrypoint renders optional ws config
-# and sets a local git identity, then execs it. No Node, no npm, no pi.
+# and sets a local git identity, then execs it. No Node, no npm, no retired runtime.
 #
 # Build context is THIS repo. The ws CLI lives in the core repo, so it is
 # sourced from a prebuilt image rather than rebuilt here:
@@ -17,7 +17,7 @@
 # --build-arg TARGETARCH=arm64.
 # =============================================================================
 
-ARG WS_IMAGE=windshift/coding-agent:latest
+ARG WS_IMAGE=ghcr.io/windshiftapp/ws-carrier:latest
 
 # --------------------------------------------------------------------
 # Stage 1: build windshift-agent (stdlib-only module, static binary)
@@ -58,7 +58,7 @@ LABEL org.windshift.agent-contract="v1"
 # gettext (envsubst for ws.toml). No node, no npm.
 RUN apk add --no-cache ca-certificates git gettext
 
-# DockerPiRunner forces --user=1000:1000 and --read-only with a tmpfs at
+# The JSONL container runner forces --user=1000:1000 and --read-only with a tmpfs at
 # /home/agent, so own that path numerically (no passwd/group churn) and
 # pre-create the ws config dir the entrypoint writes into.
 RUN install -d -o 1000 -g 1000 -m 0750 /home/agent /home/agent/.config/ws
