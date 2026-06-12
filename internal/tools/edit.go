@@ -22,7 +22,11 @@ func EditFile(path, oldString, newString string) string {
 	if oldString == newString {
 		return "(no change: old_string equals new_string)"
 	}
-	raw, err := os.ReadFile(path)
+	resolved, rerr := resolveWorkspacePath(path, false)
+	if rerr != nil {
+		return fmt.Sprintf("(path error: %v)", rerr)
+	}
+	raw, err := os.ReadFile(resolved)
 	if err != nil {
 		return fmt.Sprintf("(read error: %v)", err)
 	}
@@ -43,7 +47,7 @@ func EditFile(path, oldString, newString string) string {
 		return fmt.Sprintf("(ambiguous: old_string appears %d times - provide more context to make it unique)", n)
 	}
 	updated := strings.Replace(content, oldString, newString, 1)
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(resolved, []byte(updated), 0o644); err != nil {
 		return fmt.Sprintf("(write error: %v)", err)
 	}
 	return fmt.Sprintf("edited %s: -%d +%d bytes", path, len(oldString), len(newString))
@@ -72,7 +76,7 @@ func EditFileSchema() map[string]any {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Absolute or relative file path. Relative paths resolve against the working directory.",
+						"description": "Path under /workspace. Relative paths resolve against /workspace; absolute paths outside /workspace and '..' are rejected.",
 					},
 					"old_string": map[string]any{
 						"type":        "string",

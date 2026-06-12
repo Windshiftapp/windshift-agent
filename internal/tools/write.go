@@ -13,12 +13,16 @@ func WriteFile(path, content string) string {
 	if path == "" {
 		return "(empty path)"
 	}
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
+	resolved, rerr := resolveWorkspacePath(path, true)
+	if rerr != nil {
+		return fmt.Sprintf("(path error: %v)", rerr)
+	}
+	if dir := filepath.Dir(resolved); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Sprintf("(mkdir error: %v)", err)
 		}
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(resolved, []byte(content), 0o644); err != nil {
 		return fmt.Sprintf("(write error: %v)", err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path)
@@ -38,7 +42,7 @@ func WriteFileSchema() map[string]any {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Absolute or relative file path. Relative paths resolve against the working directory.",
+						"description": "Path under /workspace. Relative paths resolve against /workspace; absolute paths outside /workspace and '..' are rejected.",
 					},
 					"content": map[string]any{
 						"type":        "string",

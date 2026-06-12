@@ -46,6 +46,7 @@ func Bash(parent context.Context, command string, timeout time.Duration) string 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctxT, "/bin/sh", "-c", command)
+	cmd.Dir = workspaceRoot
 	// Shell gets its own process group + a Cancel that kills the whole group
 	// on cancel/timeout (Unix; no-op on Windows). Without it, backgrounded
 	// children (`cmd &`) outlive the parent shell and leak.

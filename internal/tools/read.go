@@ -15,7 +15,11 @@ func ReadFile(path string) string {
 	if path == "" {
 		return "(empty path)"
 	}
-	raw, err := os.ReadFile(path)
+	resolved, rerr := resolveWorkspacePath(path, false)
+	if rerr != nil {
+		return fmt.Sprintf("(path error: %v)", rerr)
+	}
+	raw, err := os.ReadFile(resolved)
 	if err != nil {
 		return fmt.Sprintf("(read error: %v)", err)
 	}
@@ -36,7 +40,7 @@ func ReadFileSchema() map[string]any {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Absolute or relative file path.",
+						"description": "Path under /workspace. Relative paths resolve against /workspace; absolute paths outside /workspace and '..' are rejected.",
 					},
 				},
 				"required": []string{"path"},
