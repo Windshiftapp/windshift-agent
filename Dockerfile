@@ -28,8 +28,12 @@ WORKDIR /src
 COPY go.mod ./
 RUN go mod download
 COPY . .
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# Auto-populated per target platform by buildx. NEVER give these defaults:
+# a default on a predefined platform ARG overrides the auto-provided value,
+# which shipped an x86_64 agent binary inside the arm64 image — silently
+# emulated via qemu binfmt on the arm64 runner host (core WI-394).
+ARG TARGETOS
+ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/windshift-agent ./cmd/windshift-agent
 
