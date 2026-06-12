@@ -10,6 +10,13 @@ set -eu
 
 # Windshift CLI config: render ws.toml only when the runner injected WS_* env.
 if [ -n "${WS_TOKEN:-}" ] && [ -n "${WS_API_URL:-}" ] && [ -n "${WS_WORKSPACE_KEY:-}" ]; then
+    # WS_API_URL follows the broker convention and includes the /api suffix
+    # (LLM_BASE_URL is built on it), but the ws CLI prefixes its own
+    # /rest/api/v1 routes onto the bare server root — handing it the /api
+    # base 404s every CLI call. Strip the suffix for ws.toml only.
+    WS_CLI_URL="${WS_API_URL%/}"
+    WS_CLI_URL="${WS_CLI_URL%/api}"
+    export WS_CLI_URL
     mkdir -p "$HOME/.config/ws"
     envsubst < /etc/windshift/ws.toml.template > "$HOME/.config/ws/config.toml"
     chmod 0600 "$HOME/.config/ws/config.toml"

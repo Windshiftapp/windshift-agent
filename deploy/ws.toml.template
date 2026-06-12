@@ -1,9 +1,11 @@
 # Rendered by windshift-agent-entrypoint.sh via envsubst at container start.
 # Source of truth for the env keys lives in core's
 # internal/services/run_service.go (RunService.execute / TokenSpec wiring).
+# WS_CLI_URL is derived in the entrypoint: WS_API_URL with the broker /api
+# suffix stripped, because the ws CLI routes live on the bare server root.
 
 [server]
-url = "${WS_API_URL}"
+url = "${WS_CLI_URL}"
 token = "${WS_TOKEN}"
 
 [defaults]
