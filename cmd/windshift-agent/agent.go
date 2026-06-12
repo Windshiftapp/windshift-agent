@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	chmctx "windshift-agent/internal/ctx"
 	"windshift-agent/internal/llm"
@@ -20,6 +22,13 @@ const maxTurns = 200
 
 // readBufMax caps a single JSONL line on stdin (matches JSONL runner's 1 MiB).
 const readBufMax = 1 << 20
+
+// streamRetries bounds re-issues of one model call after a transient stream
+// error; streamRetryBase scales the linear backoff between attempts.
+const (
+	streamRetries   = 3
+	streamRetryBase = 2 * time.Second
+)
 
 // agent holds the run-independent wiring; serve() drives the JSONL protocol.
 type agent struct {
@@ -151,9 +160,32 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 		}
 
 		packed := chmctx.Pack(messages, chmctx.Budget(ctxSize))
-		final, ctxWindow, err := a.collect(ctx, a.client.Chat(ctx, packed.Messages, a.tools))
-		if ctx.Err() != nil {
-			return
+
+		// One model call, with bounded retry: a transient stream break (an
+		// HTTP/2 reset between agent and broker, a proxy hiccup) used to end
+		// the whole run mid-task. The request is idempotent — the packed
+		// messages are still in hand — so re-issue it a few times before
+		// declaring the run dead. Only the final, unrecovered error becomes
+		// an error event (which the runner maps to a failed run).
+		var (
+			final     *chmctx.Message
+			ctxWindow int
+			err       error
+		)
+		for attempt := 1; ; attempt++ {
+			final, ctxWindow, err = a.collect(ctx, a.client.Chat(ctx, packed.Messages, a.tools))
+			if ctx.Err() != nil {
+				return
+			}
+			if err == nil || attempt >= streamRetries {
+				break
+			}
+			a.emit(map[string]any{"type": "retry", "message": fmt.Sprintf("stream error (attempt %d/%d), retrying: %v", attempt, streamRetries, err)})
+			select {
+			case <-time.After(time.Duration(attempt) * streamRetryBase):
+			case <-ctx.Done():
+				return
+			}
 		}
 		if err != nil {
 			a.emit(map[string]any{"type": "error", "message": err.Error()})
@@ -178,6 +210,15 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 
 		for _, tc := range final.ToolCalls {
 			if ctx.Err() != nil {
+				return
+			}
+			// finish ends the run with a structured outcome instead of tool
+			// output: emit the event and stop. Any tool calls the model
+			// queued after finish are dropped — it declared itself done.
+			if tc.Name == tools.FinishName {
+				outcome, _ := tc.Arguments["outcome"].(string)
+				summary, _ := tc.Arguments["summary"].(string)
+				a.emit(map[string]any{"type": "finish", "outcome": outcome, "summary": summary})
 				return
 			}
 			a.emit(map[string]any{"type": "tool_start", "id": tc.ID, "tool": tc.Name, "args": tc.Arguments})

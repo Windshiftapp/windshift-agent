@@ -55,8 +55,10 @@ FROM alpine:3.21
 LABEL org.windshift.agent-contract="v1"
 
 # ca-certificates (TLS to the brokers), git (agent commits in /workspace),
-# gettext (envsubst for ws.toml). No node, no npm.
-RUN apk add --no-cache ca-certificates git gettext
+# gettext (envsubst for ws.toml). ripgrep backs the grep/list_files tools;
+# fd, jq, and tree are for the model's own bash use — well-established CLIs
+# beat reimplementing search/query logic in the agent binary. No node, no npm.
+RUN apk add --no-cache ca-certificates git gettext ripgrep fd jq tree
 
 # The JSONL container runner forces --user=1000:1000 and --read-only with a tmpfs at
 # /home/agent, so own that path numerically (no passwd/group churn) and

@@ -21,6 +21,11 @@ const (
 	WriteFileName = "write_file"
 	EditFileName  = "edit_file"
 	ReadFileName  = "read_file"
+	GrepName      = "grep"
+	ListFilesName = "list_files"
+	// FinishName is dispatched by the agent loop, not Execute: it ends the
+	// run with a structured outcome event instead of producing tool output.
+	FinishName = "finish"
 )
 
 // maxBashTimeoutSeconds caps the per-call timeout_seconds the model can
@@ -154,10 +159,28 @@ func runRaw(parent context.Context, call chmctx.ToolCall) string {
 		return EditFile(path, oldString, newString)
 	case ReadFileName:
 		path, _ := call.Arguments["path"].(string)
-		return ReadFile(path)
+		return ReadFile(path, intArg(call.Arguments, "offset"), intArg(call.Arguments, "limit"))
+	case GrepName:
+		pattern, _ := call.Arguments["pattern"].(string)
+		path, _ := call.Arguments["path"].(string)
+		glob, _ := call.Arguments["glob"].(string)
+		return Grep(parent, pattern, path, glob, intArg(call.Arguments, "context_lines"))
+	case ListFilesName:
+		dir, _ := call.Arguments["dir"].(string)
+		glob, _ := call.Arguments["glob"].(string)
+		return ListFiles(parent, dir, glob)
 	default:
 		return fmt.Sprintf("(unknown tool: %s)", call.Name)
 	}
+}
+
+// intArg reads a JSON-decoded numeric argument (float64 on the wire) as an
+// int, zero when absent or non-numeric.
+func intArg(args map[string]any, key string) int {
+	if f, ok := args[key].(float64); ok {
+		return int(f)
+	}
+	return 0
 }
 
 // InlineStatus is the one-liner the TUI prints per tool call.
@@ -175,6 +198,15 @@ func InlineStatus(call chmctx.ToolCall) string {
 	case ReadFileName:
 		path, _ := call.Arguments["path"].(string)
 		return "▶ read_file: " + path
+	case GrepName:
+		pattern, _ := call.Arguments["pattern"].(string)
+		return "▶ grep: " + firstLine(pattern)
+	case ListFilesName:
+		dir, _ := call.Arguments["dir"].(string)
+		return "▶ list_files: " + dir
+	case FinishName:
+		outcome, _ := call.Arguments["outcome"].(string)
+		return "▶ finish: " + outcome
 	default:
 		// Fall back to the first non-empty string arg.
 		for _, v := range call.Arguments {

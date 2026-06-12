@@ -77,13 +77,17 @@ func configFromEnv() (config, error) {
 // toolDefs is the OpenAI tool catalog the agent advertises to the model. Each
 // *Schema() returns the complete tool object (name/description/parameters); we
 // lift them into llm.Tool so the advertised names always match tools.Execute's
-// dispatch (bash/read_file/write_file/edit_file).
+// dispatch (finish is the exception: the agent loop intercepts it and ends
+// the run instead of routing it through Execute).
 func toolDefs() []llm.Tool {
 	schemas := []map[string]any{
 		tools.BashSchema(),
 		tools.ReadFileSchema(),
 		tools.WriteFileSchema(),
 		tools.EditFileSchema(),
+		tools.GrepSchema(),
+		tools.ListFilesSchema(),
+		tools.FinishSchema(),
 	}
 	out := make([]llm.Tool, 0, len(schemas))
 	for _, s := range schemas {

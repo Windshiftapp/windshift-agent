@@ -25,9 +25,9 @@ image: ## build the thin runtime image (WS_IMAGE supplies the ws CLI)
 verify-no-node: ## assert the image contains no node/npm and the expected tools
 	@docker run --rm --entrypoint sh $(IMAGE) -c '\
 		set -e; \
-		for b in windshift-agent ws git envsubst; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
+		for b in windshift-agent ws git envsubst rg fd jq tree; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
 		if command -v node >/dev/null || command -v npm >/dev/null; then echo "FAIL: node/npm present"; exit 1; fi; \
-		echo "OK: windshift-agent + ws + git + envsubst present, no node/npm"'
+		echo "OK: windshift-agent + ws + git + envsubst + rg/fd/jq/tree present, no node/npm"'
 
 clean:
 	rm -rf dist $(BINARY)
