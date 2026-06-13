@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,31 @@ func (a *agent) emit(ev map[string]any) {
 	_, _ = a.out.Write(b)
 	_ = a.out.WriteByte('\n')
 	_ = a.out.Flush()
+}
+
+// postFinishComment posts the agent's closing summary to the assigned work item
+// as a comment via the preconfigured ws CLI — the item's human-facing record of
+// what the run did. It runs on every finish so the item is never left silent
+// after a code-delivering run (the harness opens the PR but writes nothing on
+// the item). Best-effort: a missing item id or empty summary skips silently,
+// and a failure is surfaced as an event but never blocks the finish. ws is run
+// with argv (never `sh -c`) so the model-authored summary can't be reinterpreted
+// as shell syntax.
+func (a *agent) postFinishComment(ctx context.Context, summary string) {
+	itemID := strings.TrimSpace(os.Getenv("WINDSHIFT_ITEM_ID"))
+	summary = strings.TrimSpace(summary)
+	if itemID == "" || summary == "" {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "ws", "comment", "add", itemID, "-m", summary)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		a.emit(map[string]any{
+			"type":  "comment_failed",
+			"error": strings.TrimSpace(string(out)),
+		})
+	}
 }
 
 // serve runs the JSONL control loop until stdin closes, returning the process
@@ -218,6 +245,11 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 			if tc.Name == tools.FinishName {
 				outcome, _ := tc.Arguments["outcome"].(string)
 				summary, _ := tc.Arguments["summary"].(string)
+				// Record the run's closing summary on the work item itself, the
+				// human-facing channel: the harness opens the PR but narrates
+				// nothing on the item, so without this a code-delivering run
+				// leaves the item silent. Best-effort, before the finish event.
+				a.postFinishComment(ctx, summary)
 				a.emit(map[string]any{"type": "finish", "outcome": outcome, "summary": summary})
 				return
 			}
