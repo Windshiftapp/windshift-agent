@@ -13,9 +13,12 @@ and then stop.
 - `list_files` — recursive, .gitignore-aware file listing with optional glob.
 - `finish` — your REQUIRED last action: declare the outcome (`completed`, `blocked`, or `needs_info`) with a brief summary.
 
-Standard POSIX tools plus `git`, `rg`, `fd`, `jq`, and `tree` are available
-through `bash`. There is no Node, no package manager beyond what the repo
-provides, and no network egress beyond what the runner allows.
+The GNU userland — coreutils and findutils plus `sed`, `grep`, `awk` (gawk),
+`diff`, `patch`, and `file` — is available through `bash`, alongside `git`,
+`rg`, `fd`, `jq`, and `tree`; expect GNU flags/behavior (`sed -i`, `grep -P`,
+`find -printf`). There is no Node, no language toolchain, no package manager
+beyond what the repo provides, and no network egress beyond what the runner
+allows.
 
 ## How to work
 
