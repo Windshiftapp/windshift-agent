@@ -96,6 +96,30 @@ func (a *agent) postFinishComment(ctx context.Context, summary string) {
 	}
 }
 
+// selfCommentedOnItem reports whether a bash command posted a comment on this
+// run's work item through the ws CLI — `ws comment add <item> -m …`, the
+// human-facing channel the prompt points the agent at. It matches the
+// ws/comment/add verb sequence plus a reference to the item: either the literal
+// id or the WINDSHIFT_ITEM_ID variable the prompt tells the agent to use. Used
+// to suppress the duplicate finish comment when the agent already spoke for
+// itself this run (WI-471). Heuristic by design — it shadows the documented
+// command, not every conceivable way to reach the API.
+func selfCommentedOnItem(command, itemID string) bool {
+	if itemID == "" {
+		return false
+	}
+	if !strings.Contains(command, itemID) && !strings.Contains(command, "WINDSHIFT_ITEM_ID") {
+		return false
+	}
+	fields := strings.Fields(command)
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "ws" && fields[i+1] == "comment" && fields[i+2] == "add" {
+			return true
+		}
+	}
+	return false
+}
+
 // serve runs the JSONL control loop until stdin closes, returning the process
 // exit code. A prompt starts a run in its own goroutine; abort (or stdin EOF)
 // cancels the in-flight run. JSONL runner sends one prompt, waits for session_idle,
@@ -181,6 +205,14 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 	}
 	ctxSize := a.ctxSize
 
+	// itemID identifies the run's work item; selfCommented records whether the
+	// agent already posted a comment on it this run (via `ws comment add`). The
+	// finish guard then skips its auto-comment so the item isn't double-posted
+	// (WI-471). Tracked across turns, so a comment in an early turn still
+	// suppresses the guard at finish.
+	itemID := strings.TrimSpace(os.Getenv("WINDSHIFT_ITEM_ID"))
+	selfCommented := false
+
 	for turn := 0; turn < maxTurns; turn++ {
 		if ctx.Err() != nil {
 			return
@@ -249,7 +281,13 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 				// human-facing channel: the harness opens the PR but narrates
 				// nothing on the item, so without this a code-delivering run
 				// leaves the item silent. Best-effort, before the finish event.
-				a.postFinishComment(ctx, summary)
+				// Skipped when the agent already commented on the item itself
+				// this run (WI-471) — the guard only exists to break silence, so
+				// a second auto-comment on top of the agent's own would just
+				// duplicate it.
+				if !selfCommented {
+					a.postFinishComment(ctx, summary)
+				}
 				a.emit(map[string]any{"type": "finish", "outcome": outcome, "summary": summary})
 				return
 			}
@@ -257,6 +295,14 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 			result := tools.Execute(ctx, tc)
 			a.emit(map[string]any{"type": "tool_done", "id": tc.ID, "tool": tc.Name, "output": result.Content})
 			messages = append(messages, result)
+			// Note an agent self-comment on the item so the finish guard above
+			// can stand down (WI-471). Only count a clean exit — a failed
+			// `ws comment add` posted nothing, so the guard must still fire.
+			if !selfCommented && tc.Name == tools.BashName {
+				if cmd, _ := tc.Arguments["cmd"].(string); selfCommentedOnItem(cmd, itemID) && !strings.Contains(result.Content, "(exit:") {
+					selfCommented = true
+				}
+			}
 		}
 	}
 
