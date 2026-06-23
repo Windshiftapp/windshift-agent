@@ -46,15 +46,31 @@ type FunctionDef struct {
 
 // wireMessage is the outbound OpenAI request shape; responses parse via streamChunk.
 //
-// Content has no omitempty: silent bash commands (e.g. heredoc writes) yield an
-// empty tool-result string, and omitting the field makes Ollama's /v1 shim 400
-// with "invalid message content type: <nil>". Always send an explicit string.
+// Content is `any` so it can carry either a plain string (the common case) or a
+// content-parts array (a user message bearing an image). It has no omitempty:
+// silent bash commands (e.g. heredoc writes) yield an empty tool-result string,
+// and omitting the field makes Ollama's /v1 shim 400 with "invalid message
+// content type: <nil>". toWire always sets Content to an explicit string (never
+// nil) unless image parts are present, so the empty-string behavior is preserved.
 type wireMessage struct {
 	Role       string     `json:"role"`
-	Content    string     `json:"content"`
+	Content    any        `json:"content"`
 	Name       string     `json:"name,omitempty"`         // tool name
 	ToolCallID string     `json:"tool_call_id,omitempty"` // tool role
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+}
+
+// contentPart is one element of an OpenAI content-parts array. Image parts are
+// honored only on user messages; text parts are universal.
+type contentPart struct {
+	Type     string        `json:"type"` // "text" | "image_url"
+	Text     string        `json:"text,omitempty"`
+	ImageURL *imageURLPart `json:"image_url,omitempty"`
+}
+
+type imageURLPart struct {
+	URL    string `json:"url"` // data:<mime>;base64,<...>
+	Detail string `json:"detail,omitempty"`
 }
 
 type toolCall struct {
@@ -688,6 +704,22 @@ func toWire(msgs []chmctx.Message) []wireMessage {
 			Content:    m.Content,
 			Name:       m.ToolName,
 			ToolCallID: m.ToolCallID,
+		}
+		// A user message bearing images serializes as a content-parts array
+		// (text part + one image_url part per image). Every other message keeps
+		// the flat string form, preserving the deliberate empty-string behavior.
+		if m.Role == chmctx.RoleUser && len(m.Images) > 0 {
+			parts := make([]contentPart, 0, len(m.Images)+1)
+			if m.Content != "" {
+				parts = append(parts, contentPart{Type: "text", Text: m.Content})
+			}
+			for _, img := range m.Images {
+				parts = append(parts, contentPart{
+					Type:     "image_url",
+					ImageURL: &imageURLPart{URL: img.DataURL, Detail: "auto"},
+				})
+			}
+			om.Content = parts
 		}
 		for _, tc := range m.ToolCalls {
 			args, _ := json.Marshal(tc.Arguments)

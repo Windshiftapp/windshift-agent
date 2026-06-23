@@ -23,12 +23,23 @@ type ToolCall struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
+// ImageContent is an image attached to a user message, carried as a base64
+// data URL. Only user messages may carry images: OpenAI chat-completions honors
+// image content parts on the user role only (tool/system are text-only), so
+// toWire emits image parts exclusively for the user role.
+type ImageContent struct {
+	DataURL string `json:"data_url"`
+	Source  string `json:"source,omitempty"` // human label, e.g. "attachment 7 (mockup.png)"
+}
+
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolName   string     `json:"name,omitempty"`
+	// Images attaches base64 image parts to a user message (view_image flow).
+	Images []ImageContent `json:"images,omitempty"`
 }
 
 // Tokens approximates token count as char/4, good enough for budgeting.
@@ -42,6 +53,10 @@ func (m Message) Tokens() int {
 			n += Tokens(k) + Tokens(fmt.Sprint(v))
 		}
 	}
+	// A base64 data URL is far cheaper in real image tokens than its char count
+	// suggests, so budget a flat per-image estimate instead of len/4 (which would
+	// wildly over-count and evict useful history).
+	n += len(m.Images) * ImageTokenEstimate
 	return n + 8
 }
 
@@ -56,6 +71,11 @@ const (
 	// prompt; bump here when it fails, never relax the assertion.
 	FixedSystem = 4000
 	FixedTools  = 1500
+	// ImageTokenEstimate is the flat per-image budget for a base64 image part.
+	// Real vision token cost is model-specific (hundreds–low thousands); this is
+	// a rough proxy so an attached image consumes plausible budget without the
+	// data URL's char count blowing up the packer.
+	ImageTokenEstimate = 1200
 )
 
 // budgetHeadroomDivisor cuts the history budget by 1/this (10%) below the

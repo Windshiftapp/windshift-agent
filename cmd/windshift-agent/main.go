@@ -87,6 +87,7 @@ func toolDefs() []llm.Tool {
 		tools.EditFileSchema(),
 		tools.GrepSchema(),
 		tools.ListFilesSchema(),
+		tools.ViewImageSchema(),
 		tools.FinishSchema(),
 	}
 	out := make([]llm.Tool, 0, len(schemas))
