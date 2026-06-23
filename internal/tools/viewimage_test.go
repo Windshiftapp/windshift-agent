@@ -3,6 +3,9 @@ package tools
 import "testing"
 
 func TestParseAttachmentID(t *testing.T) {
+	// Absolute attachment URLs are validated against this run's Windshift host.
+	t.Setenv("WS_API_URL", "https://ws.example.com/api")
+
 	ok := []struct {
 		name string
 		arg  any
@@ -12,7 +15,7 @@ func TestParseAttachmentID(t *testing.T) {
 		{"numeric string", "9", 9},
 		{"padded numeric string", "  42 ", 42},
 		{"relative download url", "/rest/api/v1/attachments/42/download", 42},
-		{"absolute download url", "https://ws.example.com/rest/api/v1/attachments/123/download", 123},
+		{"absolute download url, matching host", "https://ws.example.com/rest/api/v1/attachments/123/download", 123},
 	}
 	for _, tc := range ok {
 		t.Run(tc.name, func(t *testing.T) {
@@ -33,8 +36,13 @@ func TestParseAttachmentID(t *testing.T) {
 		{"empty string", ""},
 		{"zero", float64(0)},
 		{"negative", float64(-3)},
+		{"non-integer number", float64(1.9)},
 		{"non-numeric, non-url", "mockup.png"},
 		{"opaque url without attachments segment", "https://evil.example.com/12345"},
+		{"url missing api prefix", "/attachments/42/download"},
+		{"url with extra trailing segment", "https://ws.example.com/rest/api/v1/attachments/5/raw"},
+		{"attachments segment not a download url", "https://ws.example.com/foo/attachments/5/bar"},
+		{"canonical path but non-Windshift host", "https://evil.example.com/rest/api/v1/attachments/5/download"},
 		{"nil", nil},
 	}
 	for _, tc := range bad {

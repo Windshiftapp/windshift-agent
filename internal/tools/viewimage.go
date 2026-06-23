@@ -5,14 +5,23 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/url"
+	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	chmctx "windshift-agent/internal/ctx"
 )
+
+// attachmentURLRe matches a canonical Windshift attachment download URL path.
+// Only this exact shape is accepted from a URL argument — an arbitrary path that
+// merely contains an "attachments" segment is rejected, so a forged or opaque
+// URL can't be treated as a valid attachment reference.
+var attachmentURLRe = regexp.MustCompile(`/rest/api/v1/attachments/(\d+)/download/?$`)
 
 // ViewImageName is the wire name of the vision tool. It is registered only when
 // the bound model supports vision (LLM_SUPPORTS_VISION), so a no-vision model
@@ -100,7 +109,7 @@ func toolText(call chmctx.ToolCall, text string) chmctx.Message {
 func parseAttachmentID(arg any) (int, error) {
 	switch v := arg.(type) {
 	case float64:
-		if v <= 0 {
+		if v <= 0 || v != math.Trunc(v) {
 			return 0, fmt.Errorf("attachment_id must be a positive integer")
 		}
 		return int(v), nil
@@ -121,23 +130,47 @@ func parseAttachmentID(arg any) (int, error) {
 	}
 }
 
-// idFromAttachmentURL extracts the numeric id from a Windshift attachment
-// download URL (.../attachments/{id}/download). Any URL without that shape is
-// rejected so a random URL's trailing digits can't be misread as an id.
+// idFromAttachmentURL extracts the numeric id from a canonical Windshift
+// attachment download URL (.../rest/api/v1/attachments/{id}/download). The path
+// must match that exact shape, and an absolute URL's host must be this Windshift
+// instance (from WS_API_URL) — so a non-Windshift or forged URL is rejected
+// rather than treated as a valid attachment reference. A relative path (no host)
+// is accepted as unambiguously a Windshift API path.
 func idFromAttachmentURL(raw string) (int, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return 0, fmt.Errorf("not a numeric id or Windshift attachment URL")
 	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	for i := 0; i+1 < len(parts); i++ {
-		if parts[i] == "attachments" {
-			if n, err := strconv.Atoi(parts[i+1]); err == nil && n > 0 {
-				return n, nil
-			}
+	if u.Host != "" {
+		wh := windshiftHost()
+		if wh == "" || !strings.EqualFold(u.Host, wh) {
+			return 0, fmt.Errorf("attachment URL host is not this Windshift instance")
 		}
 	}
-	return 0, fmt.Errorf("not a Windshift attachment download URL")
+	m := attachmentURLRe.FindStringSubmatch(u.Path)
+	if m == nil {
+		return 0, fmt.Errorf("not a Windshift attachment download URL")
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid attachment id in URL")
+	}
+	return n, nil
+}
+
+// windshiftHost is the host of this run's Windshift instance, taken from the
+// WS_API_URL the runner injects. Empty when unset (then absolute URLs are
+// rejected — the id-or-relative-path forms still work).
+func windshiftHost() string {
+	base := strings.TrimSpace(os.Getenv("WS_API_URL"))
+	if base == "" {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // fetchAttachment streams an attachment's raw bytes through the run-scoped `ws`
