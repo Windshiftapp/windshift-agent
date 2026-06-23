@@ -111,6 +111,11 @@ func BashSchema() map[string]any {
 // Execute runs a tool call and returns the (possibly truncated) result ready
 // to be appended to the conversation as a `tool` message.
 func Execute(parent context.Context, call chmctx.ToolCall) chmctx.Message {
+	// view_image returns an image-bearing result (not a truncated string), so it
+	// bypasses the generic string path below.
+	if call.Name == ViewImageName {
+		return executeViewImage(parent, call)
+	}
 	raw := runRaw(parent, call)
 	return chmctx.Message{
 		Role:       chmctx.RoleTool,
@@ -204,6 +209,8 @@ func InlineStatus(call chmctx.ToolCall) string {
 	case ListFilesName:
 		dir, _ := call.Arguments["dir"].(string)
 		return "▶ list_files: " + dir
+	case ViewImageName:
+		return fmt.Sprintf("▶ view_image: %v", call.Arguments["attachment_id"])
 	case FinishName:
 		outcome, _ := call.Arguments["outcome"].(string)
 		return "▶ finish: " + outcome

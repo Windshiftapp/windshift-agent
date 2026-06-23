@@ -25,6 +25,11 @@ const maxTurns = 200
 // readBufMax caps a single JSONL line on stdin (matches JSONL runner's 1 MiB).
 const readBufMax = 1 << 20
 
+// maxImagesPerRun bounds how many images view_image may load into context over a
+// whole run — a backstop on token/request-body cost (each image is large) until
+// broker-side token metering enforces a quota.
+const maxImagesPerRun = 10
+
 // streamRetries bounds re-issues of one model call after a transient stream
 // error; streamRetryBase scales the linear backoff between attempts.
 const (
@@ -212,6 +217,10 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 	// suppresses the guard at finish.
 	itemID := strings.TrimSpace(os.Getenv("WINDSHIFT_ITEM_ID"))
 	selfCommented := false
+	// imagesInjected bounds how many images view_image may pull into context over
+	// the whole run, a backstop on token/request-body cost until broker-side token
+	// metering enforces a quota.
+	imagesInjected := 0
 
 	for turn := 0; turn < maxTurns; turn++ {
 		if ctx.Err() != nil {
@@ -267,6 +276,13 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 			return // task complete
 		}
 
+		// pendingImages holds images that view_image fetched this turn. They are
+		// injected as fresh user messages only AFTER every tool result for the
+		// turn is written (below the loop): Chat Completions requires every tool
+		// call in an assistant turn to be answered by a tool result before any
+		// other message, so a synthetic user image message inserted between two
+		// tool results would be invalid ordering.
+		var pendingImages []chmctx.ImageContent
 		for _, tc := range final.ToolCalls {
 			if ctx.Err() != nil {
 				return
@@ -294,6 +310,14 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 			a.emit(map[string]any{"type": "tool_start", "id": tc.ID, "tool": tc.Name, "args": tc.Arguments})
 			result := tools.Execute(ctx, tc)
 			a.emit(map[string]any{"type": "tool_done", "id": tc.ID, "tool": tc.Name, "output": result.Content})
+			// An image-bearing result (view_image) carries its image on the tool
+			// message only as a courier; image parts are invalid on the tool role,
+			// so move them to pendingImages and clear the courier before the tool
+			// message enters history.
+			if len(result.Images) > 0 {
+				pendingImages = append(pendingImages, result.Images...)
+				result.Images = nil
+			}
 			messages = append(messages, result)
 			// Note an agent self-comment on the item so the finish guard above
 			// can stand down (WI-471). Only count a clean exit — a failed
@@ -303,6 +327,26 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 					selfCommented = true
 				}
 			}
+		}
+
+		// Deferred image injection: now that every tool result for this turn is
+		// written, append one user message per fetched image so the next model
+		// turn can see it. Past the per-run cap, tell the model the image was
+		// skipped rather than silently dropping it.
+		for _, img := range pendingImages {
+			if imagesInjected >= maxImagesPerRun {
+				messages = append(messages, chmctx.Message{
+					Role:    chmctx.RoleUser,
+					Content: fmt.Sprintf("Image from %s was not loaded: this run's image limit (%d) is reached.", img.Source, maxImagesPerRun),
+				})
+				continue
+			}
+			messages = append(messages, chmctx.Message{
+				Role:    chmctx.RoleUser,
+				Content: fmt.Sprintf("Image loaded from %s:", img.Source),
+				Images:  []chmctx.ImageContent{img},
+			})
+			imagesInjected++
 		}
 	}
 
