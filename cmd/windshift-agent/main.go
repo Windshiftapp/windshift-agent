@@ -35,6 +35,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"strings"
 
 	"windshift-agent/internal/llm"
 	"windshift-agent/internal/tools"
@@ -44,20 +45,22 @@ import (
 var systemPrompt string
 
 type config struct {
-	baseURL string
-	model   string
-	token   string
-	ctxSize int
+	baseURL        string
+	model          string
+	token          string
+	ctxSize        int
+	supportsVision bool
 }
 
 const defaultContextSize = 128_000
 
 func configFromEnv() (config, error) {
 	c := config{
-		baseURL: os.Getenv("LLM_BASE_URL"),
-		model:   os.Getenv("LLM_MODEL"),
-		token:   os.Getenv("LLM_API_KEY"),
-		ctxSize: defaultContextSize,
+		baseURL:        os.Getenv("LLM_BASE_URL"),
+		model:          os.Getenv("LLM_MODEL"),
+		token:          os.Getenv("LLM_API_KEY"),
+		ctxSize:        defaultContextSize,
+		supportsVision: truthyEnv("LLM_SUPPORTS_VISION"),
 	}
 	if c.baseURL == "" {
 		return c, fmt.Errorf("LLM_BASE_URL is required")
@@ -74,12 +77,28 @@ func configFromEnv() (config, error) {
 	return c, nil
 }
 
+// truthyEnv reports whether an env var is set to an affirmative value, matching
+// the agent's other boolean flags (LLM_STREAM).
+func truthyEnv(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // toolDefs is the OpenAI tool catalog the agent advertises to the model. Each
 // *Schema() returns the complete tool object (name/description/parameters); we
 // lift them into llm.Tool so the advertised names always match tools.Execute's
 // dispatch (finish is the exception: the agent loop intercepts it and ends
 // the run instead of routing it through Execute).
-func toolDefs() []llm.Tool {
+//
+// view_image is registered only when the bound model supports vision: feeding
+// base64 image bytes to a no-vision model burns input tokens for nothing and can
+// derail the prompt, so the tool simply isn't offered and no image is ever
+// injected (WI-488).
+func toolDefs(supportsVision bool) []llm.Tool {
 	schemas := []map[string]any{
 		tools.BashSchema(),
 		tools.ReadFileSchema(),
@@ -87,9 +106,11 @@ func toolDefs() []llm.Tool {
 		tools.EditFileSchema(),
 		tools.GrepSchema(),
 		tools.ListFilesSchema(),
-		tools.ViewImageSchema(),
-		tools.FinishSchema(),
 	}
+	if supportsVision {
+		schemas = append(schemas, tools.ViewImageSchema())
+	}
+	schemas = append(schemas, tools.FinishSchema())
 	out := make([]llm.Tool, 0, len(schemas))
 	for _, s := range schemas {
 		fn, _ := s["function"].(map[string]any)
@@ -111,6 +132,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	a := newAgent(llm.New(cfg.baseURL, cfg.model, cfg.token), toolDefs(), cfg.ctxSize, os.Stdout)
+	a := newAgent(llm.New(cfg.baseURL, cfg.model, cfg.token), toolDefs(cfg.supportsVision), cfg.ctxSize, os.Stdout)
 	os.Exit(a.serve(context.Background(), os.Stdin))
 }
