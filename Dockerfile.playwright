@@ -1,0 +1,97 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# windshift-agent runner image — Playwright variant (WI-450)
+#
+# A custom coding-agent runner image for binding workloads that drive a browser
+# (e.g. running core-tests Playwright e2e). It is the SAME agent contract as the
+# default thin image — the windshift-agent binary speaks JSONL on stdin/stdout,
+# the entrypoint renders ws config + git identity, and it carries the
+# org.windshift.agent-contract label the runner verifies (WI-312) — but built on
+# Microsoft's Playwright base so Node, the browsers, and their system libraries
+# are already present. Unlike the default image this one DOES contain Node, on
+# purpose; the no-node invariant applies only to the thin default image.
+#
+# A binding opts in by setting its runner_image to where this is published, e.g.
+#   ghcr.io/windshiftapp/windshift-agent-playwright:<tag>
+# Only pool (remote) bindings honor a custom image; see the "Custom agent runner
+# images" page.
+#
+# Build context is THIS repo (the agent + entrypoint live here). The ws CLI is
+# lifted from a prebuilt core image, same as the default Dockerfile:
+#
+#   docker build -f Dockerfile.playwright \
+#     --build-arg WS_IMAGE=<image-that-bakes-ws> \
+#     -t windshift/agent-playwright:local .
+# =============================================================================
+
+ARG WS_IMAGE=ghcr.io/windshiftapp/ws-carrier:latest
+# Pin to the Playwright release the e2e suite targets; the browsers baked into
+# the base must match the @playwright/test version core-tests installs.
+ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.49.0-jammy
+
+# --------------------------------------------------------------------
+# Stage 1: build windshift-agent (stdlib-only module, static binary)
+# --------------------------------------------------------------------
+FROM golang:1.26.4-alpine AS agent-build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download
+COPY . .
+# Auto-populated per target platform by buildx — never give these defaults (a
+# default on a predefined platform ARG overrides buildx's value and ships the
+# wrong-arch binary; core WI-394).
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/windshift-agent ./cmd/windshift-agent
+
+# --------------------------------------------------------------------
+# Stage 2: ws CLI, lifted from the core-built image
+# --------------------------------------------------------------------
+FROM ${WS_IMAGE} AS ws-src
+
+# --------------------------------------------------------------------
+# Stage 3: Playwright runtime + the agent contract
+# --------------------------------------------------------------------
+FROM ${PLAYWRIGHT_IMAGE}
+
+# Agent-contract marker (WI-312): the runner inspects the configured image for
+# this label before its first claim and refuses to spawn an image without it.
+LABEL org.windshift.agent-contract="v1"
+
+# The Playwright base is Debian with Node + browsers + their OS deps already
+# installed. Add the same model-facing CLIs the thin image ships (ripgrep / fd /
+# jq / tree back the agent's search + the model's bash use) plus gettext-base for
+# the entrypoint's envsubst and git for in-workspace commits. (git is usually
+# present on the base; install is idempotent.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates git gettext-base ripgrep fd-find jq tree \
+    && rm -rf /var/lib/apt/lists/* \
+    # Debian ships fd as `fdfind`; expose it as `fd` to match the thin image.
+    && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+
+# The JSONL runner forces --user=1000:1000 and --read-only with a tmpfs at
+# /home/agent, so own that path numerically (no passwd/group churn) and
+# pre-create the ws config dir the entrypoint writes into. The Playwright base
+# already has a uid-1000 user, but the runtime home is /home/agent regardless.
+RUN install -d -o 1000 -g 1000 -m 0750 /home/agent /home/agent/.config/ws
+
+COPY --from=ws-src      /usr/local/bin/ws    /usr/local/bin/ws
+COPY --from=agent-build /out/windshift-agent /usr/local/bin/windshift-agent
+COPY deploy/ws.toml.template /etc/windshift/ws.toml.template
+COPY deploy/windshift-agent-entrypoint.sh /usr/local/bin/windshift-agent-entrypoint.sh
+RUN chmod +x /usr/local/bin/windshift-agent-entrypoint.sh \
+             /usr/local/bin/windshift-agent \
+             /usr/local/bin/ws \
+    && chmod 0644 /etc/windshift/ws.toml.template
+
+USER 1000:1000
+ENV HOME=/home/agent
+ENV PATH=/usr/local/bin:$PATH
+# Browsers live here in the base image; make the path explicit so a non-default
+# HOME can't send Playwright looking for them under /home/agent.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/windshift-agent-entrypoint.sh"]
