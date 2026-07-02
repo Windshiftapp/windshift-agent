@@ -2,10 +2,11 @@ BINARY      := windshift-agent
 PKG         := ./cmd/windshift-agent
 IMAGE       ?= windshift/agent:local
 PW_IMAGE    ?= windshift/agent-playwright:local
+GO_IMAGE    ?= windshift/agent-go-validation:local
 WS_IMAGE    ?= ghcr.io/windshiftapp/ws-carrier:latest
 LDFLAGS     := -s -w
 
-.PHONY: build test vet cross image image-playwright verify-no-node verify-agent-contract clean
+.PHONY: build test vet cross image image-playwright image-go-validation verify-no-node verify-agent-contract verify-go-validation clean
 
 build: ## build the host binary
 	go build -ldflags='$(LDFLAGS)' -o $(BINARY) $(PKG)
@@ -26,6 +27,9 @@ image: ## build the thin runtime image (WS_IMAGE supplies the ws CLI)
 image-playwright: ## build the Playwright runner variant (Node + browsers; WI-450)
 	docker build -f Dockerfile.playwright --build-arg WS_IMAGE=$(WS_IMAGE) -t $(PW_IMAGE) .
 
+image-go-validation: ## build the Go validation runner variant (Go toolchain + CGO build deps)
+	docker build -f Dockerfile.go-validation --build-arg WS_IMAGE=$(WS_IMAGE) -t $(GO_IMAGE) .
+
 verify-agent-contract: ## assert an image carries the agent-contract label + the agent/ws binaries (works for any variant)
 	@test "$$(docker inspect -f '{{ index .Config.Labels "org.windshift.agent-contract" }}' $(PW_IMAGE))" = "v1" \
 		|| { echo "FAIL: $(PW_IMAGE) missing org.windshift.agent-contract=v1"; exit 1; }
@@ -40,6 +44,15 @@ verify-no-node: ## assert the image contains no node/npm and the expected tools
 		for b in windshift-agent ws git envsubst rg fd jq tree; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
 		if command -v node >/dev/null || command -v npm >/dev/null; then echo "FAIL: node/npm present"; exit 1; fi; \
 		echo "OK: windshift-agent + ws + git + envsubst + rg/fd/jq/tree present, no node/npm"'
+
+verify-go-validation: ## assert the Go validation image has the agent contract + Go/CGO validation tools
+	@test "$$(docker inspect -f '{{ index .Config.Labels "org.windshift.agent-contract" }}' $(GO_IMAGE))" = "v1" \
+		|| { echo "FAIL: $(GO_IMAGE) missing org.windshift.agent-contract=v1"; exit 1; }
+	@docker run --rm --entrypoint sh $(GO_IMAGE) -c '\
+		set -e; \
+		for b in windshift-agent ws git envsubst rg fd jq tree go gcc g++ make pkg-config sqlite3; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
+		go version; \
+		echo "OK: Go validation image has agent contract + ws + Go/CGO tooling"'
 
 clean:
 	rm -rf dist $(BINARY)

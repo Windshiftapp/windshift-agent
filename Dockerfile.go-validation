@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# windshift-agent runner image — Go validation variant
+#
+# A custom coding-agent runner image for bindings that need to validate Go
+# repositories inside the agent sandbox. It carries the same JSONL agent
+# contract as the thin default image, but includes the Go toolchain and native
+# build utilities needed for commands such as `go test`, `go tool`, and
+# CGO-backed package builds.
+#
+# A binding opts in by setting runner_image, for example:
+#   ghcr.io/windshiftapp/windshift-agent:main-go-validation
+#
+# Build context is THIS repo. The ws CLI is lifted from a prebuilt core image,
+# same as the default Dockerfile.
+# =============================================================================
+
+ARG WS_IMAGE=ghcr.io/windshiftapp/ws-carrier:latest
+ARG GO_IMAGE=golang:1.26.4-alpine
+
+# --------------------------------------------------------------------
+# Stage 1: build windshift-agent (stdlib-only module, static binary)
+# --------------------------------------------------------------------
+FROM golang:1.26.4-alpine AS agent-build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download
+COPY . .
+# Auto-populated per target platform by buildx — never give these defaults (a
+# default on a predefined platform ARG overrides buildx's value and ships the
+# wrong-arch binary; core WI-394).
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/windshift-agent ./cmd/windshift-agent
+
+# --------------------------------------------------------------------
+# Stage 2: ws CLI, lifted from the core-built image
+# --------------------------------------------------------------------
+FROM ${WS_IMAGE} AS ws-src
+
+# --------------------------------------------------------------------
+# Stage 3: Go toolchain source, selected by GO_IMAGE
+# --------------------------------------------------------------------
+FROM ${GO_IMAGE} AS go-toolchain
+
+# --------------------------------------------------------------------
+# Stage 4: thin runtime + Go validation toolchain
+# --------------------------------------------------------------------
+FROM alpine:3.21
+
+# Agent-contract marker (WI-312): the runner inspects the configured image for
+# this label before its first claim and refuses to spawn an image without it.
+LABEL org.windshift.agent-contract="v1" \
+      org.windshift.agent-variant="go-validation"
+
+# Keep the default agent tools and GNU userland from Dockerfile, then add the Go
+# validation stack: bash/make, a native C/C++ toolchain for CGO, pkg-config,
+# SQLite headers (common in windshift-core validation), and openssh-client for
+# git remotes that use SSH.
+RUN apk add --no-cache \
+    ca-certificates git gettext ripgrep fd jq tree \
+    coreutils findutils grep sed gawk diffutils patch file \
+    bash build-base make openssh-client pkgconf sqlite-dev tzdata
+
+# The JSONL runner forces --user=1000:1000 and --read-only with a tmpfs at
+# /home/agent, so own that path numerically (no passwd/group churn) and
+# pre-create the ws config dir the entrypoint writes into.
+RUN install -d -o 1000 -g 1000 -m 0750 /home/agent /home/agent/.config/ws
+
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+COPY --from=ws-src      /usr/local/bin/ws    /usr/local/bin/ws
+COPY --from=agent-build /out/windshift-agent /usr/local/bin/windshift-agent
+COPY deploy/ws.toml.template /etc/windshift/ws.toml.template
+COPY deploy/windshift-agent-entrypoint.sh /usr/local/bin/windshift-agent-entrypoint.sh
+RUN chmod +x /usr/local/bin/windshift-agent-entrypoint.sh \
+             /usr/local/bin/windshift-agent \
+             /usr/local/bin/ws \
+    && chmod 0644 /etc/windshift/ws.toml.template
+
+USER 1000:1000
+ENV HOME=/home/agent
+ENV PATH=/usr/local/go/bin:/usr/local/bin:$PATH
+# Put Go caches under /workspace so the runner's workspace bind mount is the
+# writable location. The image runtime itself is read-only.
+ENV GOPATH=/workspace/.cache/go
+ENV GOMODCACHE=/workspace/.cache/go/pkg/mod
+ENV GOCACHE=/workspace/.cache/go-build
+ENV GOFLAGS=-buildvcs=false
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/windshift-agent-entrypoint.sh"]

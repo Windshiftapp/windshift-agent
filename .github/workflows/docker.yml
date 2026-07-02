@@ -53,6 +53,18 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
 
+      - name: Extract Go validation metadata
+        id: meta-go-validation
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest-go-validation,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-dev') && !contains(github.ref, '-test') && !contains(github.ref, '-rc') }}
+            type=ref,event=branch,suffix=-go-validation
+            type=semver,pattern={{version}}-go-validation
+            type=semver,pattern={{major}}.{{minor}}-go-validation
+            type=sha,prefix=,suffix=-go-validation
+
       # The agent build cross-compiles via TARGETARCH (CGO off), so a single
       # multi-platform buildx pass is cheap — no QEMU for the Go stage. Push
       # only off PRs; PRs just validate the build.
@@ -68,3 +80,20 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=windshift-agent
           cache-to: type=gha,mode=max,scope=windshift-agent
+
+      # Custom runner image for Go repository validation (go test / go tool /
+      # CGO-backed package builds). Published under the same image repository
+      # with a -go-validation tag suffix, e.g. :main-go-validation.
+      - name: Build and push Go validation image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        with:
+          context: .
+          file: Dockerfile.go-validation
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            WS_IMAGE=${{ env.WS_IMAGE }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-go-validation.outputs.tags }}
+          labels: ${{ steps.meta-go-validation.outputs.labels }}
+          cache-from: type=gha,scope=windshift-agent-go-validation
+          cache-to: type=gha,mode=max,scope=windshift-agent-go-validation

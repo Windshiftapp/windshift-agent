@@ -48,9 +48,11 @@ is built from this repo; the `ws` CLI lives in core, so it is lifted from a
 prebuilt image via the `WS_IMAGE` build arg.
 
 ```bash
-make cross                              # static linux amd64 + arm64 binaries
-make image WS_IMAGE=<image-with-ws>     # build windshift/agent:local
-make verify-no-node                     # assert tools present AND no node/npm
+make cross                                  # static linux amd64 + arm64 binaries
+make image WS_IMAGE=<image-with-ws>         # build windshift/agent:local
+make verify-no-node                         # assert tools present AND no node/npm
+make image-go-validation WS_IMAGE=<image>   # build Go validation variant
+make verify-go-validation                   # assert Go/CGO validation tools exist
 ```
 
 `make verify-no-node` is the WI-210 acceptance check: it confirms
@@ -59,14 +61,24 @@ nor `npm` exists in the image. The container runs as uid 1000 with `/workspace`
 as the working dir, matching the Docker JSONL runner's `--user=1000:1000 --read-only`
 contract.
 
+The Go validation variant (`Dockerfile.go-validation`) is a custom runner image
+for bindings that need to validate Go repositories inside the agent sandbox. It
+keeps the same agent contract but adds Go, `make`, `bash`, a native C/C++
+toolchain, `pkg-config`, SQLite headers, and SSH-capable git tooling. CI
+publishes it under the same image repository with a `-go-validation` tag suffix,
+e.g. `ghcr.io/windshiftapp/windshift-agent:main-go-validation`.
+
 ## Releases / CI
 
-GitHub Actions (`.github/workflows/docker.yml`) builds the image on every push
-to `main` and on `v*` tags, publishing multi-arch (amd64+arm64) to
-`ghcr.io/windshiftapp/windshift-agent` (`:latest` on stable tags, plus semver
-and `sha-` tags). Pull requests build-only. The `ws` CLI is lifted from
-`WS_IMAGE` (default `ghcr.io/windshiftapp/ws-carrier:latest`; override
-with the `WS_IMAGE` repo/org variable).
+GitHub Actions (`.github/workflows/docker.yml`) builds the default image and
+the Go validation variant on every push to `main` and on `v*` tags, publishing
+multi-arch (amd64+arm64) to `ghcr.io/windshiftapp/windshift-agent`. The default
+image gets `:latest` on stable tags, plus semver and `sha-` tags. The Go
+validation image gets the same tag set with a `-go-validation` suffix, e.g.
+`:main-go-validation`, `:<version>-go-validation`, and
+`:latest-go-validation` on stable tags. Pull requests build-only. The `ws` CLI
+is lifted from `WS_IMAGE` (default `ghcr.io/windshiftapp/ws-carrier:latest`;
+override with the `WS_IMAGE` repo/org variable).
 
 Core's `release.sh` also builds and pushes this image as part of a coordinated
 release (using the ws-carrier image it just built as `WS_IMAGE`), so a
