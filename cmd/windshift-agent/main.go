@@ -7,8 +7,7 @@
 // The agent is the UNTRUSTED payload. It holds no SCM credentials and chooses
 // nothing about what to clone or push: the runner prepares /workspace and
 // brokers every outbound secret. The agent reaches the model only through the
-// Windshift llm-proxy (OpenAI-compatible /v1/chat/completions), configured
-// entirely from the environment.
+// Windshift llm-proxy, configured entirely from the environment.
 //
 // It speaks the JSONL subprocess contract that services.JSONL runner drives:
 //
@@ -35,6 +34,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"windshift-agent/internal/llm"
@@ -46,35 +46,37 @@ var systemPrompt string
 
 type config struct {
 	baseURL        string
-	model          string
 	token          string
 	ctxSize        int
+	maxTokens      int
 	supportsVision bool
 }
-
-const defaultContextSize = 128_000
 
 func configFromEnv() (config, error) {
 	c := config{
 		baseURL:        os.Getenv("LLM_BASE_URL"),
-		model:          os.Getenv("LLM_MODEL"),
 		token:          os.Getenv("LLM_API_KEY"),
-		ctxSize:        defaultContextSize,
 		supportsVision: truthyEnv("LLM_SUPPORTS_VISION"),
 	}
 	if c.baseURL == "" {
 		return c, fmt.Errorf("LLM_BASE_URL is required")
 	}
-	if c.model == "" {
-		return c, fmt.Errorf("LLM_MODEL is required")
+	var err error
+	if c.ctxSize, err = positiveEnv("LLM_CONTEXT_WINDOW"); err != nil {
+		return c, err
 	}
-	if v := os.Getenv("LLM_CONTEXT_SIZE"); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
-			c.ctxSize = n
-		}
+	if c.maxTokens, err = positiveEnv("LLM_MAX_TOKENS"); err != nil {
+		return c, err
 	}
 	return c, nil
+}
+
+func positiveEnv(key string) (int, error) {
+	n, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return n, nil
 }
 
 // truthyEnv reports whether an env var is set to an affirmative value, matching
@@ -132,6 +134,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	a := newAgent(llm.New(cfg.baseURL, cfg.model, cfg.token), toolDefs(cfg.supportsVision), cfg.ctxSize, os.Stdout)
+	a := newAgent(llm.New(cfg.baseURL, cfg.token, cfg.maxTokens), toolDefs(cfg.supportsVision), cfg.ctxSize, os.Stdout)
 	os.Exit(a.serve(context.Background(), os.Stdin))
 }

@@ -7,7 +7,15 @@ import (
 	"strings"
 )
 
-const workspaceRoot = "/workspace"
+// workspaceRoot defaults to the container mount. The override exists for the
+// real-binary integration harness, which runs outside a container against a
+// temporary repository; production does not set it.
+var workspaceRoot = func() string {
+	if configured := strings.TrimSpace(os.Getenv("WINDSHIFT_AGENT_WORKSPACE")); configured != "" {
+		return filepath.Clean(configured)
+	}
+	return "/workspace"
+}()
 
 func resolveWorkspacePath(path string, forWrite bool) (string, error) {
 	if path == "" {

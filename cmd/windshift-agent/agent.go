@@ -228,6 +228,9 @@ func (a *agent) runPrompt(ctx context.Context, prompt string) {
 		}
 
 		packed := chmctx.Pack(messages, chmctx.Budget(ctxSize))
+		if packed.StablePrefix > 0 {
+			packed.Messages[packed.StablePrefix-1].CacheBreakpoint = true
+		}
 
 		// One model call, with bounded retry: a transient stream break (an
 		// HTTP/2 reset between agent and broker, a proxy hiccup) used to end

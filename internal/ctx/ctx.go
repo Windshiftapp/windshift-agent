@@ -3,6 +3,7 @@
 package ctx
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"unicode/utf8"
@@ -40,6 +41,11 @@ type Message struct {
 	ToolName   string     `json:"name,omitempty"`
 	// Images attaches base64 image parts to a user message (view_image flow).
 	Images []ImageContent `json:"images,omitempty"`
+	// ProviderState is opaque provider-owned continuation metadata. The packer
+	// keeps it attached to the assistant turn that produced its tool calls.
+	ProviderState   json.RawMessage `json:"provider_state,omitempty"`
+	ProviderBinding string          `json:"provider_binding,omitempty"`
+	CacheBreakpoint bool            `json:"cache_breakpoint,omitempty"`
 }
 
 // Tokens approximates token count as char/4, good enough for budgeting.
@@ -139,65 +145,137 @@ func runeBoundaryUp(out string, i int) int {
 
 // PackResult records what Pack kept: the packed messages and their count.
 type PackResult struct {
-	Messages []Message
-	Kept     int
+	Messages     []Message
+	Kept         int
+	StablePrefix int // number of leading messages pinned byte-for-byte across turns
 }
 
-// Pack keeps whole messages newest-first until the budget is full, then
-// returns them chronologically. The newest message is always kept, even if it
-// alone exceeds the budget. Two clean-up passes then keep the wire well-formed:
-// dropDanglingToolCalls drops an assistant whose tool_calls weren't all
-// answered (the cancel-mid-tool case), and dropOrphanTools drops tool messages
-// whose assistant.tool_calls ancestor got trimmed off the top. Both directions
-// 400 every OpenAI-compatible backend, so both are stripped before the wire.
-// A final anchorUserMessage pass guarantees the window is never userless: the
-// third shape that 400s every backend, and the one a long single turn reaches
-// when the budget walk evicts the sole user task. demoteSystemMessages then runs
-// last, rewriting any surviving system note to a user message: the wire is always
-// prefixed by the embedded system prompt, so a fourth shape (a second, non-leading
-// system message) 400s strict backends, and that note is only ever a soft-nudge.
+// Pack pins the original user task as a stable prefix, then packs complete
+// chronological units newest-first after that breakpoint. A tool-producing
+// assistant and all of its tool results are one indivisible unit, which keeps
+// opaque reasoning/thinking ProviderState paired with the calls it produced at
+// every budget boundary. The newest valid unit is retained even over budget.
+//
+// System notes are normalized before selection, rather than rewriting the
+// selected prefix afterward. Together with pinning the original task this means
+// appending a turn cannot mutate bytes already advertised as StablePrefix.
 func Pack(history []Message, budget int) PackResult {
+	normalized := normalizeSystemMessages(history)
+	anchor := firstUserIndex(history)
 	kept := make([]Message, 0, len(history))
+	stablePrefix := 0
 	used := 0
-	// walk newest to oldest
-	for i := len(history) - 1; i >= 0; i-- {
-		cost := history[i].Tokens()
-		if len(kept) > 0 && used+cost > budget {
+	if anchor >= 0 {
+		kept = append(kept, normalized[:anchor+1]...)
+		used = messagesTokens(kept)
+		stablePrefix = len(kept)
+	}
+
+	units := completePackingUnits(normalized, stablePrefix)
+	selected := make([][]Message, 0, len(units))
+	for i := len(units) - 1; i >= 0; i-- {
+		cost := messagesTokens(units[i])
+		if len(selected) > 0 && used+cost > budget {
 			break
 		}
-		kept = append(kept, history[i])
+		selected = append(selected, units[i])
 		used += cost
 	}
-	slices.Reverse(kept)
-	// Dangling assistant first: dropping it can orphan its partial tool results,
-	// which the following dropOrphanTools pass then cleans up.
+	slices.Reverse(selected)
+	for _, unit := range selected {
+		kept = append(kept, unit...)
+	}
+	// Defense in depth for malformed imported history. completePackingUnits
+	// already emits paired groups, but these passes preserve the old contract.
 	kept = dropDanglingToolCalls(kept)
 	kept = dropOrphanTools(kept)
-	// dropOrphanTools can empty the kept set when the newest message is a tool
-	// result whose owning assistant fell just past the budget cut: the always-
-	// keep-newest guard keeps the lone tool, then the orphan drop removes it,
-	// leaving nothing, so the next request would carry only the system prompt
-	// and silently lose the whole conversation mid-turn (reachable on small-ctx
-	// profiles after a big tool output). Recover the newest assistant+tool-results
-	// group whole, over budget if need be, with the same deliberately-over-budget
-	// guarantee a newest user message already gets.
-	if len(kept) == 0 {
-		// Recover the group over budget, then re-run the same two passes the
-		// normal path uses: a partially-answered parallel set (owner issued c1,c2
-		// but only c1 came back before an abort) would otherwise reach the wire as
-		// a dangling assistant and 400 every backend. Fully-answered groups pass
-		// through untouched; an unpairable partial empties to nothing, a
-		// well-formed system-only request, not a 400.
-		kept = newestToolGroup(history)
-		kept = dropDanglingToolCalls(kept)
-		kept = dropOrphanTools(kept)
-	}
-	kept = anchorUserMessage(kept, history)
-	kept = demoteSystemMessages(kept)
 	return PackResult{
-		Messages: kept,
-		Kept:     len(kept),
+		Messages:     kept,
+		Kept:         len(kept),
+		StablePrefix: stablePrefix,
 	}
+}
+
+func firstUserIndex(history []Message) int {
+	for i := range history {
+		if history[i].Role == RoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
+func messagesTokens(messages []Message) int {
+	total := 0
+	for _, message := range messages {
+		total += message.Tokens()
+	}
+	return total
+}
+
+// completePackingUnits turns a tool round into an atomic packing unit. A
+// partially answered parallel-call round is discarded whole: retaining either
+// its ProviderState or one result without every sibling is rejected by strict
+// provider APIs. Ordinary messages are single-message units.
+func completePackingUnits(history []Message, skipBefore int) [][]Message {
+	units := make([][]Message, 0, len(history))
+	for i := 0; i < len(history); i++ {
+		if i < skipBefore {
+			continue
+		}
+		message := history[i]
+		if message.Role == RoleTool {
+			continue // orphaned or consumed with its owner below
+		}
+		if message.Role != RoleAssistant || len(message.ToolCalls) == 0 {
+			units = append(units, []Message{message})
+			continue
+		}
+
+		issued := map[string]bool{}
+		complete := true
+		for _, call := range message.ToolCalls {
+			if call.ID == "" {
+				complete = false
+			}
+			issued[call.ID] = true
+		}
+		answers := map[string]bool{}
+		results := make([]Message, 0, len(message.ToolCalls))
+		j := i + 1
+		for ; j < len(history) && history[j].Role == RoleTool; j++ {
+			if issued[history[j].ToolCallID] {
+				answers[history[j].ToolCallID] = true
+				results = append(results, history[j])
+			}
+		}
+		for _, call := range message.ToolCalls {
+			if !answers[call.ID] {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			units = append(units, append([]Message{message}, results...))
+		}
+		i = j - 1
+	}
+	return units
+}
+
+func normalizeSystemMessages(history []Message) []Message {
+	out := slices.Clone(history)
+	leading := true
+	for i := range out {
+		if out[i].Role == RoleSystem && leading {
+			continue
+		}
+		leading = false
+		if out[i].Role == RoleSystem {
+			out[i].Role = RoleUser
+		}
+	}
+	return out
 }
 
 // anchorUserMessage guarantees the packed window carries a user-role message
