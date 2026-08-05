@@ -19,6 +19,9 @@ func TestNeutralClientPostsSingleInferenceOperation(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer run-token" {
 			t.Fatalf("authorization = %q", got)
 		}
+		if got := r.Header.Get("X-Protocol-Version"); got != "1" {
+			t.Fatalf("protocol version = %q, want %q", got, "1")
+		}
 		var request map[string]json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)

@@ -147,6 +147,11 @@ func (c *Client) runNeutral(parent context.Context, messages []chmctx.Message, t
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Content-Type", "application/json")
+	// Advertise the neutral inference contract version so the broker rejects a
+	// stale client with a diagnostic 426 Upgrade Required instead of letting it
+	// misparse the response (WI-921). Keep in lockstep with the broker's
+	// brokerProtocolVersion.
+	request.Header.Set("X-Protocol-Version", "1")
 	response, err := c.http.Do(request)
 	if err != nil {
 		sendEvent(parent, out, Event{Kind: EventError, Err: err})
