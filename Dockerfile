@@ -56,13 +56,14 @@ LABEL org.windshift.agent-contract="v1"
 
 # ca-certificates (TLS to the brokers), git (agent commits in /workspace),
 # gettext (envsubst for ws.toml). ripgrep backs the grep/list_files tools;
-# fd, jq, and tree are for the model's own bash use — well-established CLIs
-# beat reimplementing search/query logic in the agent binary. The GNU userland
+# fd, jq, tree, and python3 are for the model's own shell use — well-established
+# tools beat reimplementing search/query and short scripting tasks in the agent
+# binary. The GNU userland
 # (coreutils/findutils/grep/sed/gawk/diffutils/patch/file) replaces the busybox
 # applets so the model's bash use gets the GNU flags/behavior it expects
 # (sed -i, grep -P, find -printf, …) instead of musl/busybox surprises.
 # No node, no npm.
-RUN apk add --no-cache ca-certificates git gettext ripgrep fd jq tree \
+RUN apk add --no-cache ca-certificates git gettext ripgrep fd jq tree python3 \
     coreutils findutils grep sed gawk diffutils patch file
 
 # The JSONL container runner forces --user=1000:1000 and --read-only with a tmpfs at

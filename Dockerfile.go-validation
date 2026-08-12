@@ -59,7 +59,7 @@ LABEL org.windshift.agent-contract="v1" \
 # SQLite headers (common in windshift-core validation), and openssh-client for
 # git remotes that use SSH.
 RUN apk add --no-cache \
-    ca-certificates git gettext ripgrep fd jq tree \
+    ca-certificates git gettext ripgrep fd jq tree python3 \
     coreutils findutils grep sed gawk diffutils patch file \
     bash build-base make openssh-client pkgconf sqlite-dev tzdata
 

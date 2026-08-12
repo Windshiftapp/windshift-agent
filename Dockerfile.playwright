@@ -66,7 +66,7 @@ LABEL org.windshift.agent-contract="v1"
 # present on the base; install is idempotent.)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates git gettext-base ripgrep fd-find jq tree \
+        ca-certificates git gettext-base ripgrep fd-find jq tree python3 \
     && rm -rf /var/lib/apt/lists/* \
     # Debian ships fd as `fdfind`; expose it as `fd` to match the thin image.
     && ln -sf "$(command -v fdfind)" /usr/local/bin/fd

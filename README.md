@@ -56,10 +56,10 @@ make verify-go-validation                   # assert Go/CGO validation tools exi
 ```
 
 `make verify-no-node` is the WI-210 acceptance check: it confirms
-`windshift-agent`, `ws`, `git`, and `envsubst` resolve and that neither `node`
-nor `npm` exists in the image. The container runs as uid 1000 with `/workspace`
-as the working dir, matching the Docker JSONL runner's `--user=1000:1000 --read-only`
-contract.
+`windshift-agent`, `ws`, `git`, `envsubst`, and `python3` resolve and that
+neither `node` nor `npm` exists in the image. The container runs as uid 1000
+with `/workspace` as the working dir, matching the Docker JSONL runner's
+`--user=1000:1000 --read-only` contract.
 
 The Go validation variant (`Dockerfile.go-validation`) is a custom runner image
 for bindings that need to validate Go repositories inside the agent sandbox. It

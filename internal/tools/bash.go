@@ -95,6 +95,7 @@ func BashSchema() map[string]any {
 				"properties": map[string]any{
 					"cmd": map[string]any{
 						"type":        "string",
+						"minLength":   1,
 						"description": "The shell command to execute.",
 					},
 					"timeout_seconds": map[string]any{
@@ -142,7 +143,10 @@ func runRaw(parent context.Context, call chmctx.ToolCall) string {
 	}
 	switch call.Name {
 	case BashName:
-		cmd, _ := call.Arguments["cmd"].(string)
+		cmd, ok := call.Arguments["cmd"].(string)
+		if !ok || strings.TrimSpace(cmd) == "" {
+			return `(invalid arguments: bash requires a non-empty string "cmd"; retry the bash call with the intended command)`
+		}
 		// Default 2m, overridable per call up to 1h. Clamp seconds BEFORE the
 		// Duration multiply: 1e18 would overflow int64 into a negative duration,
 		// and 0.5 would truncate to 0 and cancel before the shell runs, so

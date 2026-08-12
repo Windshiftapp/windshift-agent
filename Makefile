@@ -35,22 +35,22 @@ verify-agent-contract: ## assert an image carries the agent-contract label + the
 		|| { echo "FAIL: $(PW_IMAGE) missing org.windshift.agent-contract=v1"; exit 1; }
 	@docker run --rm --entrypoint sh $(PW_IMAGE) -c '\
 		set -e; \
-		for b in windshift-agent ws git envsubst rg fd jq tree node npx; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
+		for b in windshift-agent ws git envsubst rg fd jq tree python3 node npx; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
 		echo "OK: agent contract + ws + tools + node present"'
 
 verify-no-node: ## assert the image contains no node/npm and the expected tools
 	@docker run --rm --entrypoint sh $(IMAGE) -c '\
 		set -e; \
-		for b in windshift-agent ws git envsubst rg fd jq tree; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
+		for b in windshift-agent ws git envsubst rg fd jq tree python3; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
 		if command -v node >/dev/null || command -v npm >/dev/null; then echo "FAIL: node/npm present"; exit 1; fi; \
-		echo "OK: windshift-agent + ws + git + envsubst + rg/fd/jq/tree present, no node/npm"'
+		echo "OK: windshift-agent + ws + git + envsubst + rg/fd/jq/tree/python3 present, no node/npm"'
 
 verify-go-validation: ## assert the Go validation image has the agent contract + Go/CGO validation tools
 	@test "$$(docker inspect -f '{{ index .Config.Labels "org.windshift.agent-contract" }}' $(GO_IMAGE))" = "v1" \
 		|| { echo "FAIL: $(GO_IMAGE) missing org.windshift.agent-contract=v1"; exit 1; }
 	@docker run --rm --entrypoint sh $(GO_IMAGE) -c '\
 		set -e; \
-		for b in windshift-agent ws git envsubst rg fd jq tree go gcc g++ make pkg-config sqlite3; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
+		for b in windshift-agent ws git envsubst rg fd jq tree python3 go gcc g++ make pkg-config sqlite3; do command -v $$b >/dev/null || { echo "MISSING $$b"; exit 1; }; done; \
 		go version; \
 		echo "OK: Go validation image has agent contract + ws + Go/CGO tooling"'
 
